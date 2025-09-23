@@ -1,73 +1,50 @@
-import chromadb
-import os
-from dotenv import load_dotenv
-from chromadb.utils import embedding_functions
+import sqlite3
 
-# --- 1. Загрузка API-ключа ---
-load_dotenv()  # Загружаем переменные из файла .env
-API_KEY = os.getenv('GOOGLE_API_KEY')
+# Создаем соединение с базой данных SQLite (или создаем файл базы данных, если его нет)
+conn = sqlite3.connect('employees.db')
+cursor = conn.cursor()
 
-if not API_KEY:
-    raise ValueError("GOOGLE_API_KEY не найден. Убедитесь, что он есть в файле .env")
+# Загружаем SQL файлы для создания таблиц и вставки данных
+with open('create_tables.sql', 'r') as f:
+    cursor.executescript(f.read())
 
-# --- 2. Настройка ChromaDB с эмбеддингами (без использования Google Gemini) ---
-client = chromadb.Client()
+with open('insert_data.sql', 'r') as f:
+    cursor.executescript(f.read())
 
-# Используем встроенную эмбеддинг-функцию Chroma для создания эмбеддингов
-embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction()
+# Запросы с оператором EXCEPT
+# 1. Найти сотрудников, которые сейчас работают, но никогда не числились в списке уволенных
+query_working_not_fired = """
+SELECT EmployeeID, FullName, Department
+FROM Employees
+EXCEPT
+SELECT EmployeeID, FullName, Department
+FROM FormerEmployees;
+"""
 
-# Создаем коллекцию
-try:
-    collection = client.create_collection(
-        name="student_test_collection",  # Название коллекции
-        embedding_function=embedding_function  # Используем стандартную эмбеддинг-функцию
-    )
-    print("Коллекция успешно создана.")
-except chromadb.errors.UniqueConstraintError:
-    # Если коллекция уже существует, удаляем её и создаем новую
-    client.delete_collection(name="student_test_collection")
-    collection = client.create_collection(
-        name="student_test_collection",
-        embedding_function=embedding_function
-    )
-    print("Старая коллекция удалена, создана новая.")
+# 2. Найти сотрудников, которые уволились, но снова не были приняты в текущий штат
+query_fired_not_working = """
+SELECT EmployeeID, FullName, Department
+FROM FormerEmployees
+EXCEPT
+SELECT EmployeeID, FullName, Department
+FROM Employees;
+"""
 
-# --- 3. Добавление данных (Индексация) ---
-print("Добавление документов в ChromaDB...")
+# Выполним запросы
+cursor.execute(query_working_not_fired)
+result_working_not_fired = cursor.fetchall()
 
-collection.add(
-    documents=[
-        "Python - это высокоуровневый язык программирования, известный своей простотой.",
-        "SQL (Structured Query Language) используется для управления реляционными базами данных.",
-        "Велосипед - это транспортное средство, приводимое в движение мускульной силой человека.",
-        "Самое высокое здание в мире - Бурдж-Халифа."
-    ],
-    metadatas=[
-        {"source": "wiki", "topic": "programming"},
-        {"source": "textbook", "topic": "database"},
-        {"source": "dictionary", "topic": "transport"},
-        {"source": "web", "topic": "architecture"}
-    ],
-    ids=["doc1", "doc2", "doc3", "doc4"]  # Уникальные ID для каждого документа
-)
+cursor.execute(query_fired_not_working)
+result_fired_not_working = cursor.fetchall()
 
-print(f"Документы добавлены. Всего в коллекции: {collection.count()} элементов.")
+# Выведем результаты
+print("Сотрудники, которые сейчас работают, но никогда не числились в списке уволенных:")
+for row in result_working_not_fired:
+    print(row)
 
-# --- 4. Тестирование запроса (Поиск) ---
-print("\n--- ТЕСТИРОВАНИЕ ЗАПРОСА ---")
+print("\nСотрудники, которые уволились, но снова не были приняты в текущий штат:")
+for row in result_fired_not_working:
+    print(row)
 
-query_text = "Что такое язык для работы с БД?"
-
-results = collection.query(
-    query_texts=[query_text],
-    n_results=2  # Попросим 2 самых релевантных результата
-)
-
-# Выводим результаты запроса
-print(f"Результаты по запросу: '{query_text}'")
-print(results)
-
-# Выводим наиболее релевантный документ
-print("\nСамый релевантный документ:")
-print(f"Текст: {results['documents'][0][0]}")
-print(f"Источник: {results['metadatas'][0][0]['source']}")
+# Закрываем соединение
+conn.close()
